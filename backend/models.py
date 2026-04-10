@@ -7,6 +7,7 @@ class StaffStatus(str, Enum):
     OFF_PROCESS = "Off-Process"  # Standby
     IN_PROCESS = "In-Process"    # Active with a patient
     DISPATCHED = "Dispatched"    # En route to a crisis
+    IN_TRANSIT = "In-Transit"
 
 class PatientStatus(str, Enum):
     STABLE = "Stable"

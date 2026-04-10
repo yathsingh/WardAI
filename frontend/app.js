@@ -28,10 +28,7 @@ async function updateDashboard() {
         updateModeUI();
         renderWards(data.wards, data.nurses);
         renderTriageTable(data.wards, data.nurses);
-        
-        // NEW: Render the Standby Pool
         renderStandbyPool(data.nurses); 
-        
         renderPendingQueue(data.pending);
         renderAuditLog(data.audit_log);
         checkCodeBlue(data.wards);
@@ -58,6 +55,27 @@ function renderWards(wards, nurses) {
         container.innerHTML = wards[wardId].beds.map(bed => {
             const isCritical = bed.risk_score > 75;
             const isUnmonitored = !bed.assigned_nurse_id && (bed.risk_score > 40);
+            
+            // NEW: In-Transit Logic for the Ward Cards
+            const nurse = bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id] : null;
+            const isTransit = nurse && (nurse.status === "In-Transit" || nurse.status === "IN_TRANSIT");
+            
+            let staffHtml = '<span class="text-amber-600 animate-pulse font-bold">UNASSIGNED</span>';
+            if (nurse) {
+                if (isTransit) {
+                    staffHtml = `
+                        <div class="flex items-center space-x-1 text-amber-500 font-bold text-[10px] animate-pulse">
+                            <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                            <span>EN ROUTE: ${nurse.name}</span>
+                        </div>`;
+                } else {
+                    staffHtml = `<span class="text-slate-800 font-semibold text-sm">${nurse.name}</span>`;
+                }
+            }
+
             return `
                 <div class="room-card p-4 rounded-xl border-2 bg-slate-50 ${isCritical ? 'pulse-red border-red-500 bg-red-50 shadow-md' : isUnmonitored ? 'border-amber-400 border-dashed bg-amber-50' : 'border-slate-100 bg-white'}">
                     <div class="flex justify-between items-start mb-1">
@@ -68,8 +86,8 @@ function renderWards(wards, nurses) {
                         <span>MAP: ${bed.vitals.map.toFixed(1)}</span>
                         <span>HR: ${bed.vitals.hr.toFixed(1)}</span>
                     </div>
-                    <div class="text-[10px] text-slate-500 uppercase tracking-wider">Assigned Staff</div>
-                    <div class="font-semibold text-sm text-slate-800">${bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id].name : '<span class="text-amber-600 animate-pulse">UNASSIGNED</span>'}</div>
+                    <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Assigned Staff</div>
+                    <div class="min-h-[20px] flex items-center">${staffHtml}</div>
                 </div>`;
         }).join('');
     });
@@ -78,16 +96,30 @@ function renderWards(wards, nurses) {
 function renderTriageTable(wards, nurses) {
     const tableBody = document.getElementById('triage-body');
     const allBeds = [...wards.Ward_A.beds, ...wards.Ward_B.beds].sort((a,b) => b.risk_score - a.risk_score);
-    tableBody.innerHTML = allBeds.map(bed => `
+    tableBody.innerHTML = allBeds.map(bed => {
+        // NEW: In-Transit Logic for the Triage Table
+        const nurse = bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id] : null;
+        const isTransit = nurse && (nurse.status === "In-Transit" || nurse.status === "IN_TRANSIT");
+        
+        let staffText = '---';
+        if (nurse) {
+            if (isTransit) {
+                staffText = `<span class="text-amber-500 flex items-center gap-1 font-bold"><svg class="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> ${nurse.name}</span>`;
+            } else {
+                staffText = nurse.name;
+            }
+        }
+
+        return `
         <tr class="border-b border-slate-50 hover:bg-slate-50 transition-colors">
             <td class="py-3 px-2 font-bold">${bed.id}</td>
             <td class="py-3 px-2"><div class="w-24 bg-slate-200 rounded-full h-2 overflow-hidden"><div class="${bed.risk_score > 75 ? 'bg-red-500' : 'bg-blue-600'} h-2 transition-all duration-500" style="width: ${bed.risk_score}%"></div></div></td>
             <td class="py-3 px-2 ${bed.deltas.map < -2 ? 'text-red-500 font-bold' : 'text-slate-500'} mono-text text-xs">${bed.deltas.map.toFixed(2)} Δ MAP</td>
-            <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id].name : '---'}</td>
-        </tr>`).join('');
+            <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${staffText}</td>
+        </tr>`;
+    }).join('');
 }
 
-// NEW: RENDER STANDBY POOL
 function renderStandbyPool(nurses) {
     const standbyContainer = document.getElementById('standby-list');
     const standbyNurses = Object.values(nurses).filter(n => !n.assigned_bed_id);

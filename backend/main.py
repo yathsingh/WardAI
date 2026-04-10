@@ -61,18 +61,24 @@ async def run_hospital_simulation():
         for ward in wards.values():
             for bed in ward.beds:
                 
+                # Check if a nurse is physically present (not just assigned, but arrived)
+                nurse_is_active = False
+                if bed.assigned_nurse_id:
+                    status_val = getattr(nurses[bed.assigned_nurse_id].status, "value", nurses[bed.assigned_nurse_id].status)
+                    if status_val != "In-Transit":
+                        nurse_is_active = True
+
                 is_crashing = False
                 drop_map = 0.0
                 rise_hr = 0.0
 
-                # --- NEW BREATHING HOSPITAL LOGIC (DEMO TUNED) ---
                 if active_scenario == "Baseline":
-                    if not bed.assigned_nurse_id:
-                        # Unmonitored: Drifts worse a bit faster for the demo
+                    if not nurse_is_active:
+                        # Unmonitored or En Route: Drifts worse
                         drop_map = random.uniform(0.2, 0.5)
                         rise_hr = random.uniform(0.4, 0.8)
                     else:
-                        # Monitored: Recovers faster for the demo
+                        # Monitored: Recovers
                         drop_map = random.uniform(-1.0, -0.4)
                         rise_hr = random.uniform(-1.5, -0.8)
                         
@@ -87,7 +93,7 @@ async def run_hospital_simulation():
 
                 # Apply Scenario logic
                 if is_crashing:
-                    if not bed.assigned_nurse_id:
+                    if not nurse_is_active:
                         bed.vitals["map"] -= drop_map
                         bed.vitals["hr"] += rise_hr
                         bed.status = PatientStatus.WARNING
@@ -112,20 +118,16 @@ async def run_hospital_simulation():
                 bed.risk_score = score
                 bed.deltas = deltas
 
-                # --- AUTONOMOUS NURSING OPERATIONS (FASTER & STAGGERED) ---
+                # --- AUTONOMOUS NURSING OPERATIONS ---
                 if active_scenario == "Baseline":
-                    # A. Discharge to Standby if perfectly stable (<20 Risk)
-                    if bed.assigned_nurse_id and bed.risk_score < 20:
-                        # Stagger the departures so they don't all leave at exactly the same tick
+                    if nurse_is_active and bed.risk_score < 20:
                         if random.random() < 0.4:
                             nid = bed.assigned_nurse_id
                             nurses[nid].assigned_bed_id = None
                             nurses[nid].status = StaffStatus.OFF_PROCESS
                             bed.assigned_nurse_id = None
                     
-                    # B. Routine Scheduled Check (Starts earlier at 25 Risk)
                     elif 25 < bed.risk_score < 75 and not bed.assigned_nurse_id:
-                        # Spread them out: 25% chance per tick to initiate the check
                         if random.random() < 0.25:
                             free_nurses = [nid for nid, n in nurses.items() if n.status == StaffStatus.OFF_PROCESS and n.ward_id == bed.ward_id]
                             if not free_nurses: 
@@ -137,7 +139,7 @@ async def run_hospital_simulation():
                                 nurses[nid].assigned_bed_id = bed.id
                                 bed.assigned_nurse_id = nid
 
-                # 3. TRIGGER AI COMMAND CENTER (Crisis >= 75 Risk)
+                # 3. TRIGGER AI COMMAND CENTER
                 if bed.risk_score >= 75 and not bed.assigned_nurse_id:
                     pending_nurse_names = [a["nurse_name"] for a in allocator.pending_actions]
                     safe_nurses = {nid: n for nid, n in nurses.items() if n.name not in pending_nurse_names}
@@ -181,7 +183,6 @@ async def trigger_scenario(scenario_name: str):
         active_scenario = scenario_name
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # Unassign nurses for MCE so the AI has to solve the crisis
         if scenario_name == "MCE":
             target_ids = ["B4", "A1", "A3"]
             for ward in wards.values():
@@ -223,6 +224,10 @@ async def approve_allocation(action_id: str):
         target_ward_id = action["target_ward"]
         old_bed_id = nurses[nurse_id].assigned_bed_id
         
+        # 1. Evaluate Transit Time (Corridor Penalty)
+        is_cross_ward = nurses[nurse_id].ward_id != target_ward_id
+        transit_time = 8 if is_cross_ward else 2
+        
         if old_bed_id:
             for w in wards.values():
                 for b in w.beds:
@@ -230,20 +235,39 @@ async def approve_allocation(action_id: str):
                         b.assigned_nurse_id = None
                         b.status = PatientStatus.WARNING
 
-        nurses[nurse_id].status = StaffStatus.IN_PROCESS
+        # 2. Set to In-Transit
+        # (Make sure "In-Transit" is defined in models.py StaffStatus)
+        nurses[nurse_id].status = "In-Transit"
         nurses[nurse_id].assigned_bed_id = target_bed_id
         for b in wards[target_ward_id].beds:
             if b.id == target_bed_id:
                 b.assigned_nurse_id = nurse_id
 
+        # 3. Create Async Arrival Timer
+        async def nurse_arrival_timer(nid, bed_id, t_time):
+            await asyncio.sleep(t_time)
+            nurses[nid].status = StaffStatus.IN_PROCESS
+            audit_log.insert(0, {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "action": f"ARRIVED: {nurses[nid].name} engaged at Bed {bed_id}",
+                "reason": f"Transit complete ({t_time}s). Stabilization initiated.",
+                "mode": simulation_mode
+            })
+            if len(audit_log) > 20: audit_log.pop()
+
+        # Fire off the background timer
+        asyncio.create_task(nurse_arrival_timer(nurse_id, target_bed_id, transit_time))
+
+        # Log the immediate dispatch
         timestamp = datetime.now().strftime("%H:%M:%S")
         audit_log.insert(0, {
             "time": timestamp,
-            "action": f"Dispatched {action['nurse_name']} to Bed {target_bed_id}",
-            "reason": action['reason'],
+            "action": f"DISPATCHED: {action['nurse_name']} to Bed {target_bed_id}",
+            "reason": f"{action['reason']} (ETA: {transit_time}s)",
             "mode": simulation_mode
         })
         if len(audit_log) > 20: audit_log.pop()
+        
         allocator.pending_actions = [a for a in allocator.pending_actions if a["target_bed"] != target_bed_id]
         return {"message": "Success"}
     raise HTTPException(status_code=400, detail="Dispatch failed")
