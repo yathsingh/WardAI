@@ -5,29 +5,47 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WardAI | Command Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        .mono-text { font-family: 'JetBrains Mono', monospace; }
         .room-card { transition: all 0.3s ease; }
         .pulse-red { animation: pulse-border 1.5s infinite; }
+        
         @keyframes pulse-border {
             0% { border-color: #ef4444; box-shadow: 0 0 0 0px rgba(239, 68, 68, 0.4); }
             70% { border-color: #ef4444; box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
             100% { border-color: #ef4444; box-shadow: 0 0 0 0px rgba(239, 68, 68, 0); }
         }
+
+        /* NEW: The Code Blue Screen Flash Overlay */
+        #alarm-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            pointer-events: none; z-index: 9999;
+            box-shadow: inset 0 0 0px rgba(239, 68, 68, 0);
+            transition: box-shadow 0.3s ease;
+        }
+        .code-blue-active {
+            animation: screen-pulse 1s infinite alternate;
+        }
+        @keyframes screen-pulse {
+            from { box-shadow: inset 0 0 0px rgba(239, 68, 68, 0); }
+            to { box-shadow: inset 0 0 80px rgba(239, 68, 68, 0.4); }
+        }
     </style>
 </head>
 <body class="p-6">
+    
+    <div id="alarm-overlay"></div>
 
-    <div class="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+    <div class="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200 relative z-10">
         <div>
             <h1 class="text-2xl font-bold text-slate-800 tracking-tight">WardAI <span class="text-blue-600">Command</span></h1>
             <p class="text-slate-500 text-sm">Dynamic Ward Allotment System</p>
         </div>
         <div class="flex items-center space-x-4">
-            <span id="mode-label" class="text-sm font-semibold text-slate-600 uppercase">Manual Mode</span>
-            <button onclick="toggleSystemMode()" id="mode-toggle" class="w-14 h-7 bg-slate-200 rounded-full p-1 transition-colors duration-300">
+            <span id="mode-label" class="text-sm font-semibold text-slate-600 uppercase transition-colors">Manual Mode</span>
+            <button onclick="toggleSystemMode()" id="mode-toggle" class="w-14 h-7 bg-slate-200 rounded-full p-1 transition-colors duration-300 focus:outline-none">
                 <div id="toggle-circle" class="bg-white w-5 h-5 rounded-full shadow-md transform transition-transform duration-300"></div>
             </button>
         </div>
@@ -36,20 +54,18 @@
     <div class="grid grid-cols-2 gap-8 mb-8">
         <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
             <h2 class="text-lg font-bold mb-4 text-slate-700 border-b pb-2">Ward A: North Wing</h2>
-            <div id="ward-a-grid" class="grid grid-cols-2 gap-4">
-                </div>
+            <div id="ward-a-grid" class="grid grid-cols-2 gap-4"></div>
         </div>
 
         <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
             <h2 class="text-lg font-bold mb-4 text-slate-700 border-b pb-2">Ward B: South Wing</h2>
-            <div id="ward-b-grid" class="grid grid-cols-2 gap-4">
-                </div>
+            <div id="ward-b-grid" class="grid grid-cols-2 gap-4"></div>
         </div>
     </div>
 
-    <div class="grid grid-cols-3 gap-8 h-96">
-        <div class="col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-            <div class="p-4 border-b font-bold text-slate-700 bg-slate-50 rounded-t-2xl">Live Triage Priority</div>
+    <div class="grid grid-cols-3 gap-8 mb-8 h-96">
+        <div class="col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+            <div class="p-4 border-b font-bold text-slate-700 bg-slate-50 rounded-t-2xl shrink-0">Live Triage Priority</div>
             <div class="overflow-y-auto flex-grow p-4">
                 <table class="w-full text-left border-collapse">
                     <thead>
@@ -60,20 +76,33 @@
                             <th class="pb-3 px-2">Assigned Staff</th>
                         </tr>
                     </thead>
-                    <tbody id="triage-body" class="text-sm">
-                        </tbody>
+                    <tbody id="triage-body" class="text-sm"></tbody>
                 </table>
             </div>
         </div>
 
-        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">
-            <div class="p-4 border-b font-bold text-slate-700 bg-blue-50 text-blue-700 rounded-t-2xl flex justify-between">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+            <div class="p-4 border-b font-bold text-slate-700 bg-blue-50 text-blue-700 rounded-t-2xl flex justify-between shrink-0">
                 <span>Pending Actions</span>
                 <span id="queue-count" class="bg-blue-200 text-blue-800 px-2 rounded-full text-xs">0</span>
             </div>
-            <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto">
+            <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto flex-grow">
                 <p class="text-slate-400 text-center py-10 italic">No pending alerts.</p>
             </div>
+        </div>
+    </div>
+
+    <div class="bg-slate-800 rounded-2xl shadow-lg border border-slate-700 flex flex-col overflow-hidden">
+        <div class="p-4 border-b border-slate-700 font-bold text-slate-200 bg-slate-900 flex justify-between items-center shrink-0">
+            <span>Cryptographic Audit Log</span>
+            <span class="text-[10px] bg-slate-700 px-2 py-1 rounded text-slate-300 mono-text">HL7/FHIR COMPLIANT</span>
+        </div>
+        <div class="p-0 overflow-y-auto max-h-48">
+            <table class="w-full text-left border-collapse text-slate-300">
+                <tbody id="audit-body" class="text-xs mono-text">
+                    <tr><td class="p-4 text-center text-slate-500 italic">No triage actions recorded in current session.</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+from datetime import datetime
 
 # Absolute imports for running from the root directory
 from backend.models import Ward, Bed, Nurse, StaffStatus, PatientStatus
@@ -19,7 +20,8 @@ app.add_middleware(
 
 # --- THE DATA STORE ---
 allocator = TriageAllocator()
-simulation_mode = "Manual"  # Options: "Manual" or "Auto-Pilot"
+simulation_mode = "Manual"  
+audit_log = [] # NEW: Enterprise Audit Trail
 
 # Initialize 2 Wards with 4 Rooms each
 wards = {
@@ -59,12 +61,10 @@ async def run_hospital_simulation():
                 nurse.status = StaffStatus.IN_PROCESS
                 nurse.assigned_bed_id = bed.id
                 bed.assigned_nurse_id = nurse.id
-            print("🚨 SCENARIO: All nurses now IN-PROCESS. Standby pool empty.")
 
         # 1. Update Vitals
         for ward in wards.values():
             for bed in ward.beds:
-                # Add natural, alternating physiological noise
                 if tick % 2 == 0:
                     bed.vitals["hr"] += 0.5
                     bed.vitals["map"] -= 0.2
@@ -75,19 +75,16 @@ async def run_hospital_simulation():
                 # CRASH TRIGGER: Bed B4 Bleed Scenario
                 if bed.id == "B4" and tick >= 15:
                     if not bed.assigned_nurse_id:
-                        # ACTIVE CRISIS: Patient is unmonitored, vitals plummet
                         bed.vitals["map"] -= 2.5
                         bed.vitals["hr"] += 4.0
                         bed.status = PatientStatus.WARNING
                     else:
-                        # RECOVERY PHASE: Nurse assigned! Vitals begin to stabilize
                         if bed.vitals["map"] < 85.0:
                             bed.vitals["map"] += 1.5
                         if bed.vitals["hr"] > 80.0:
                             bed.vitals["hr"] -= 2.0
-                        bed.status = PatientStatus.CRITICAL # Actively being treated
+                        bed.status = PatientStatus.CRITICAL 
 
-                # SAFETY BOUNDARIES: Prevent biologically impossible numbers
                 bed.vitals["map"] = max(30.0, min(120.0, bed.vitals["map"]))
                 bed.vitals["hr"] = max(40.0, min(200.0, bed.vitals["hr"]))
 
@@ -96,14 +93,11 @@ async def run_hospital_simulation():
                 bed.risk_score = score
                 bed.deltas = deltas
 
-                # 3. TRIGGER ALLOCATOR (Only trigger if high risk AND no nurse)
+                # 3. TRIGGER ALLOCATOR 
                 if bed.risk_score > 75 and not bed.assigned_nurse_id:
                     best_nurse, reason = allocator.find_best_nurse(bed, wards, nurses)
-                    
                     if best_nurse:
                         action = allocator.propose_move(best_nurse, bed, reason)
-                        
-                        # AUTO-PILOT: Execute immediately if enabled
                         if simulation_mode == "Auto-Pilot":
                             await approve_allocation(action["id"])
 
@@ -120,6 +114,7 @@ async def get_status():
         "wards": wards, 
         "nurses": nurses, 
         "pending": allocator.pending_actions,
+        "audit_log": audit_log, # NEW: Send the log to the frontend
         "mode": simulation_mode
     }
 
@@ -163,11 +158,21 @@ async def approve_allocation(action_id: str):
         for b in wards[target_ward_id].beds:
             if b.id == target_bed_id:
                 b.assigned_nurse_id = nurse_id
-                # Status is handled dynamically in the simulation loop now
 
-        # Clear ALL pending actions for this target bed to clean up the UI
-        allocator.pending_actions = [a for a in allocator.pending_actions if a["target_bed"] != target_bed_id]
+        # NEW: Append to Audit Log (Insert at the top)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        audit_log.insert(0, {
+            "time": timestamp,
+            "action": f"Dispatched {action['nurse_name']} to Bed {target_bed_id}",
+            "reason": action['reason'],
+            "mode": simulation_mode
+        })
         
+        # Keep log from getting too long in memory
+        if len(audit_log) > 20:
+            audit_log.pop()
+
+        allocator.pending_actions = [a for a in allocator.pending_actions if a["target_bed"] != target_bed_id]
         return {"message": f"Successfully dispatched {action['nurse_name']} to Bed {target_bed_id}"}
 
     raise HTTPException(status_code=400, detail="Dispatch failed")

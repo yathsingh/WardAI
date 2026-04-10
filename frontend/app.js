@@ -1,13 +1,42 @@
 const API_BASE = "http://127.0.0.1:8000/api";
 let currentMode = "Manual";
+let isAlarming = false;
+let audioCtx = null;
 
-// 1. POLLING LOOP: Fetch data every second
+// NEW: Built-in Hospital Telemetry Beep (No MP3 required!)
+function playCodeBlueBeep() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    // Browsers block audio until the user clicks somewhere, so we catch errors silently
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    
+    try {
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(850, audioCtx.currentTime); // High pitched hospital tone
+        
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); // Keep it quiet so it's not annoying
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+        
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.5);
+    } catch(e) { console.log("Audio waiting for user interaction"); }
+}
+
+// 1. POLLING LOOP
 async function updateDashboard() {
     try {
         const response = await fetch(`${API_BASE}/status`);
         const data = await response.json();
         
-        // Only update the mode from the server if we haven't just toggled it locally
         if (data.mode) {
             currentMode = data.mode;
             updateModeUI();
@@ -16,22 +45,47 @@ async function updateDashboard() {
         renderWards(data.wards, data.nurses);
         renderTriageTable(data.wards);
         renderPendingQueue(data.pending);
+        renderAuditLog(data.audit_log); // NEW
+        
+        // NEW: Code Blue Alarm Detection
+        checkCodeBlue(data.wards);
+
     } catch (err) {
         console.error("Connection lost to WardAI Backend", err);
     }
 }
 
-// 2. RENDER WARDS (Top Half)
+// NEW: Trigger visual and audio alarms if anyone is > 90% risk
+function checkCodeBlue(wards) {
+    const allBeds = [...wards.Ward_A.beds, ...wards.Ward_B.beds];
+    const hasCritical = allBeds.some(bed => bed.risk_score >= 90);
+    
+    const overlay = document.getElementById('alarm-overlay');
+    
+    if (hasCritical && !isAlarming) {
+        isAlarming = true;
+        overlay.classList.add('code-blue-active');
+    } else if (!hasCritical && isAlarming) {
+        isAlarming = false;
+        overlay.classList.remove('code-blue-active');
+    }
+
+    // Play beep every second while alarming
+    if (isAlarming) {
+        playCodeBlueBeep();
+    }
+}
+
+// 2. RENDER WARDS
 function renderWards(wards, nurses) {
     ['Ward_A', 'Ward_B'].forEach(wardId => {
         const container = document.getElementById(wardId === 'Ward_A' ? 'ward-a-grid' : 'ward-b-grid');
-        container.innerHTML = ''; // Clear previous state
+        container.innerHTML = ''; 
 
         wards[wardId].beds.forEach(bed => {
             const isCritical = bed.risk_score > 75;
             const isUnmonitoredCrisis = !bed.assigned_nurse_id && bed.status === "Warning";
             
-            // Dynamic styling based on the new backend statuses
             const card = document.createElement('div');
             card.className = `room-card p-4 rounded-xl border-2 bg-slate-50 transition-all ${
                 isCritical ? 'pulse-red border-red-500 bg-red-50 shadow-md' : 
@@ -43,7 +97,7 @@ function renderWards(wards, nurses) {
                     <span class="font-bold text-slate-700">${bed.id}</span>
                     <span class="text-xs font-bold ${isCritical ? 'text-red-600' : 'text-slate-400'}">${bed.risk_score}% RISK</span>
                 </div>
-                <div class="flex justify-between items-center text-[10px] text-slate-400 font-mono mb-2 border-b border-slate-100 pb-1">
+                <div class="flex justify-between items-center text-[10px] text-slate-400 mono-text mb-2 border-b border-slate-100 pb-1">
                     <span>MAP: ${bed.vitals.map.toFixed(1)}</span>
                     <span>HR: ${bed.vitals.hr.toFixed(1)}</span>
                 </div>
@@ -57,12 +111,11 @@ function renderWards(wards, nurses) {
     });
 }
 
-// 3. RENDER TRIAGE TABLE (Bottom Left)
+// 3. RENDER TRIAGE TABLE
 function renderTriageTable(wards) {
     const tableBody = document.getElementById('triage-body');
     const allBeds = [...wards.Ward_A.beds, ...wards.Ward_B.beds];
     
-    // THE TRIAGE SORT: Highest risk first
     allBeds.sort((a, b) => b.risk_score - a.risk_score);
 
     tableBody.innerHTML = allBeds.map(bed => `
@@ -73,7 +126,7 @@ function renderTriageTable(wards) {
                     <div class="${bed.risk_score > 75 ? 'bg-red-500' : 'bg-blue-600'} h-2 rounded-full transition-all duration-500" style="width: ${bed.risk_score}%"></div>
                 </div>
             </td>
-            <td class="py-3 px-2 ${bed.deltas.map < -2 ? 'text-red-500 font-bold' : bed.deltas.map > 2 ? 'text-green-500' : 'text-slate-500'} font-mono text-xs">
+            <td class="py-3 px-2 ${bed.deltas.map < -2 ? 'text-red-500 font-bold' : bed.deltas.map > 2 ? 'text-green-500' : 'text-slate-500'} mono-text text-xs">
                 ${bed.deltas.map > 0 ? '+' : ''}${bed.deltas.map.toFixed(2)} Δ MAP
             </td>
             <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${bed.assigned_nurse_id || '---'}</td>
@@ -81,7 +134,7 @@ function renderTriageTable(wards) {
     `).join('');
 }
 
-// 4. RENDER PENDING QUEUE (Bottom Right)
+// 4. RENDER PENDING QUEUE
 function renderPendingQueue(pending) {
     const queue = document.getElementById('pending-actions');
     document.getElementById('queue-count').innerText = pending.length;
@@ -92,7 +145,6 @@ function renderPendingQueue(pending) {
     }
 
     queue.innerHTML = pending.map(action => {
-        // Color-code the alerts based on severity
         const isCriticalSwap = action.reason.includes("CRITICAL");
         const borderColor = isCriticalSwap ? 'border-red-500' : 'border-blue-500';
         const textColor = isCriticalSwap ? 'text-red-600' : 'text-blue-600';
@@ -112,27 +164,41 @@ function renderPendingQueue(pending) {
     }).join('');
 }
 
-// 5. USER INTERACTIONS
+// NEW 5. RENDER AUDIT LOG
+function renderAuditLog(log) {
+    const logBody = document.getElementById('audit-body');
+    if (!log || log.length === 0) return;
+
+    logBody.innerHTML = log.map((entry, index) => `
+        <tr class="border-b border-slate-700 hover:bg-slate-800 transition-colors ${index === 0 ? 'bg-slate-800' : ''}">
+            <td class="py-2 px-4 text-blue-400 w-24">[${entry.time}]</td>
+            <td class="py-2 px-4 text-emerald-400 w-48">${entry.mode.toUpperCase()} OVERRIDE</td>
+            <td class="py-2 px-4 text-slate-100 font-bold">${entry.action}</td>
+            <td class="py-2 px-4 text-slate-400 w-1/3 truncate" title="${entry.reason}">Hash Check: ${entry.reason}</td>
+        </tr>
+    `).join('');
+}
+
+// 6. USER INTERACTIONS
 async function approveAction(actionId) {
+    // Note: Clicking the button unlocks the browser's Audio context for the beep!
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    
     try {
         await fetch(`${API_BASE}/allocate/approve/${actionId}`, { method: 'POST' });
-        updateDashboard(); // Immediate refresh
-    } catch (err) {
-        console.error("Failed to approve action", err);
-    }
+        updateDashboard(); 
+    } catch (err) { console.error("Failed to approve action", err); }
 }
 
 async function toggleSystemMode() {
-    // 1. Immediately toggle the local state so the UI feels instant
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    
     currentMode = currentMode === "Manual" ? "Auto-Pilot" : "Manual";
     updateModeUI(); 
 
-    // 2. Tell the backend
     try {
         await fetch(`${API_BASE}/settings/mode?mode=${currentMode}`, { method: 'POST' });
     } catch (err) {
-        console.error("Failed to change mode", err);
-        // Revert UI if server fails
         currentMode = currentMode === "Manual" ? "Auto-Pilot" : "Manual";
         updateModeUI();
     }
@@ -143,27 +209,21 @@ function updateModeUI() {
     const circle = document.getElementById('toggle-circle');
     const toggle = document.getElementById('mode-toggle');
 
-    // Bulletproof explicit class management
     if (currentMode === "Auto-Pilot") {
         label.innerText = "Auto-Pilot Active";
         label.classList.add('text-blue-600');
-        
         toggle.classList.remove('bg-slate-200');
         toggle.classList.add('bg-blue-600');
-        
         circle.classList.add('translate-x-7');
     } else {
         label.innerText = "Manual Mode";
         label.classList.remove('text-blue-600');
-        
         toggle.classList.remove('bg-blue-600');
         toggle.classList.add('bg-slate-200');
-        
         circle.classList.remove('translate-x-7');
     }
 }
 
-// Utility animation for the new action cards
 document.head.insertAdjacentHTML("beforeend", `<style>
 @keyframes slideInRight {
     from { transform: translateX(20px); opacity: 0; }
@@ -171,5 +231,4 @@ document.head.insertAdjacentHTML("beforeend", `<style>
 }
 </style>`);
 
-// Start polling
 setInterval(updateDashboard, 1000);
