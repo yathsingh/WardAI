@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException
 import asyncio
 from models import Ward, Bed, Nurse, StaffStatus, PatientStatus
 from ml_engine import predict_risk
@@ -74,3 +75,47 @@ async def startup():
 @app.get("/api/status")
 async def get_status():
     return {"wards": wards, "nurses": nurses, "pending": allocator.pending_actions}
+
+@app.post("/api/allocate/approve/{action_id}")
+async def approve_allocation(action_id: str):
+    # 1. Find the proposed action in the queue
+    action = next((a for a in allocator.pending_actions if a["id"] == action_id), None)
+    
+    if not action:
+        raise HTTPException(status_code=404, detail="Proposed action not found or already processed.")
+
+    nurse_id = None
+    # Find the nurse ID from the name (in a real app, use IDs in the action object)
+    for nid, n in nurses.items():
+        if n.name == action["nurse_name"]:
+            nurse_id = nid
+            break
+
+    if nurse_id:
+        target_bed_id = action["target_bed"]
+        target_ward_id = action["target_ward"]
+        
+        # 2. EXECUTE THE SWAP
+        # If the nurse was already with a patient, unassign that patient first
+        old_bed_id = nurses[nurse_id].assigned_bed_id
+        if old_bed_id:
+            for b in wards[nurses[nurse_id].ward_id].beds:
+                if b.id == old_bed_id:
+                    b.assigned_nurse_id = None
+                    b.status = PatientStatus.WARNING # Mark as unmonitored!
+
+        # 3. ASSIGN TO NEW CRISIS
+        nurses[nurse_id].status = StaffStatus.DISPATCHED
+        nurses[nurse_id].assigned_bed_id = target_bed_id
+        
+        for b in wards[target_ward_id].beds:
+            if b.id == target_bed_id:
+                b.assigned_nurse_id = nurse_id
+                b.status = PatientStatus.CRITICAL
+
+        # 4. REMOVE FROM QUEUE
+        allocator.pending_actions = [a for a in allocator.pending_actions if a["id"] != action_id]
+        
+        return {"message": f"Successfully dispatched {action['nurse_name']} to Bed {target_bed_id}"}
+
+    return {"error": "Could not execute dispatch."}
