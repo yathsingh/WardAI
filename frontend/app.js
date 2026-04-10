@@ -27,7 +27,10 @@ async function updateDashboard() {
         currentMode = data.mode;
         updateModeUI();
         renderWards(data.wards, data.nurses);
-        renderTriageTable(data.wards);
+        
+        // FIX 1: Passed data.nurses into the table function
+        renderTriageTable(data.wards, data.nurses);
+        
         renderPendingQueue(data.pending);
         renderAuditLog(data.audit_log);
         checkCodeBlue(data.wards);
@@ -71,7 +74,8 @@ function renderWards(wards, nurses) {
     });
 }
 
-function renderTriageTable(wards) {
+// FIX 2: Added 'nurses' to the function parameters
+function renderTriageTable(wards, nurses) {
     const tableBody = document.getElementById('triage-body');
     const allBeds = [...wards.Ward_A.beds, ...wards.Ward_B.beds].sort((a,b) => b.risk_score - a.risk_score);
     tableBody.innerHTML = allBeds.map(bed => `
@@ -79,7 +83,7 @@ function renderTriageTable(wards) {
             <td class="py-3 px-2 font-bold">${bed.id}</td>
             <td class="py-3 px-2"><div class="w-24 bg-slate-200 rounded-full h-2 overflow-hidden"><div class="${bed.risk_score > 75 ? 'bg-red-500' : 'bg-blue-600'} h-2 transition-all duration-500" style="width: ${bed.risk_score}%"></div></div></td>
             <td class="py-3 px-2 ${bed.deltas.map < -2 ? 'text-red-500 font-bold' : 'text-slate-500'} mono-text text-xs">${bed.deltas.map.toFixed(2)} Δ MAP</td>
-            <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${bed.assigned_nurse_id || '---'}</td>
+            <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id].name : '---'}</td>
         </tr>`).join('');
 }
 
