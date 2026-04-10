@@ -52,7 +52,7 @@ async def run_hospital_simulation():
         await asyncio.sleep(1)
         tick += 1
         
-        # SCENARIO SETUP: At Tick 5, occupy all nurses to simulate 100% capacity.
+        # SCENARIO SETUP: At Tick 5, occupy all nurses.
         if tick == 5:
             nurse_list = list(nurses.values())
             all_beds = wards["Ward_A"].beds + wards["Ward_B"].beds
@@ -76,30 +76,32 @@ async def run_hospital_simulation():
                 
                 # --- DYNAMIC SCENARIO LOGIC ---
                 is_crashing = False
+                drop_map = 0.0
+                rise_hr = 0.0
+
                 if active_scenario == "Bleed_B4" and bed.id == "B4":
                     is_crashing = True
+                    drop_map = 3.0 # Fast crash
+                    rise_hr = 5.0
                 elif active_scenario == "MCE" and bed.id in ["B4", "A1", "A3"]:
                     is_crashing = True
+                    drop_map = 1.1 # 🎬 CINEMATIC CRASH: Takes exactly 10s to hit alarms
+                    rise_hr = 2.0
 
                 if is_crashing:
                     if not bed.assigned_nurse_id:
-                        # ACTIVE CRISIS: High velocity drop for demo impact
-                        bed.vitals["map"] -= 3.0 
-                        bed.vitals["hr"] += 5.0
+                        bed.vitals["map"] -= drop_map
+                        bed.vitals["hr"] += rise_hr
                         bed.status = PatientStatus.WARNING
                     else:
-                        # RECOVERY PHASE: Vitals stabilize when nurse is present
-                        if bed.vitals["map"] < 85.0:
-                            bed.vitals["map"] += 1.5
-                        if bed.vitals["hr"] > 80.0:
-                            bed.vitals["hr"] -= 2.0
+                        if bed.vitals["map"] < 85.0: bed.vitals["map"] += 1.5
+                        if bed.vitals["hr"] > 80.0: bed.vitals["hr"] -= 2.0
                         bed.status = PatientStatus.CRITICAL 
                 
-                # Reset status if stable and scenario is cleared
-                if active_scenario == "Baseline" and bed.risk_score < 40:
+                # Reset status if stable
+                if not is_crashing and bed.risk_score < 40:
                     bed.status = PatientStatus.STABLE
 
-                # Physical boundaries
                 bed.vitals["map"] = max(30.0, min(120.0, bed.vitals["map"]))
                 bed.vitals["hr"] = max(40.0, min(200.0, bed.vitals["hr"]))
 
@@ -110,7 +112,11 @@ async def run_hospital_simulation():
 
                 # 3. TRIGGER ALLOCATOR 
                 if bed.risk_score > 75 and not bed.assigned_nurse_id:
-                    best_nurse, reason = allocator.find_best_nurse(bed, wards, nurses)
+                    # 🚨 BUG FIX: Hide nurses who are already in the Pending Queue
+                    pending_nurse_names = [a["nurse_name"] for a in allocator.pending_actions]
+                    safe_nurses = {nid: n for nid, n in nurses.items() if n.name not in pending_nurse_names}
+                    
+                    best_nurse, reason = allocator.find_best_nurse(bed, wards, safe_nurses)
                     if best_nurse:
                         action = allocator.propose_move(best_nurse, bed, reason)
                         if simulation_mode == "Auto-Pilot":
@@ -149,22 +155,17 @@ async def trigger_scenario(scenario_name: str):
         active_scenario = scenario_name
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # 🚨 NEW: CRITICAL MCE LOGIC
-        # If MCE starts, we must unassign nurses from the target beds 
-        # so the AI actually has a "problem" to solve.
+        # Unassign nurses for MCE so the AI has to solve the crisis
         if scenario_name == "MCE":
             target_ids = ["B4", "A1", "A3"]
             for ward in wards.values():
                 for bed in ward.beds:
                     if bed.id in target_ids and bed.assigned_nurse_id:
-                        # Find the nurse and kick them to "Off-Process" (Standby)
                         nid = bed.assigned_nurse_id
                         nurses[nid].assigned_bed_id = None
                         nurses[nid].status = StaffStatus.OFF_PROCESS
-                        # Empty the bed
                         bed.assigned_nurse_id = None
-        
-        # Professionalized Reasonings
+
         reasons = {
             "Baseline": "Standard ward monitoring protocols active.",
             "Bleed_B4": "ADMIN_OVERRIDE: Internal trauma data stream engaged.",
@@ -203,7 +204,8 @@ async def approve_allocation(action_id: str):
                         b.assigned_nurse_id = None
                         b.status = PatientStatus.WARNING
 
-        nurses[nurse_id].status = StaffStatus.DISPATCHED
+        # 🚨 BUG FIX: Force status immediately to IN_PROCESS so the allocator stops picking them
+        nurses[nurse_id].status = StaffStatus.IN_PROCESS
         nurses[nurse_id].assigned_bed_id = target_bed_id
         for b in wards[target_ward_id].beds:
             if b.id == target_bed_id:
