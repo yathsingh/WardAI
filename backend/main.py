@@ -1,87 +1,76 @@
-import pandas as pd
-import numpy as np
-import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+from models import Ward, Bed, Nurse, StaffStatus, PatientStatus
+from ml_engine import predict_risk
+from allocator import TriageAllocator
 
-def apply_noise(series, noise_level=0.015, outlier_prob=0.005, outlier_range=(0, 200)):
-    """Adds Gaussian noise and occasional sensor 'glitches' to mimic real hardware."""
-    noise = np.random.normal(0, series.mean() * noise_level, len(series))
-    series = series + noise
-    
-    mask = np.random.rand(len(series)) < outlier_prob
-    series[mask] = np.random.uniform(outlier_range[0], outlier_range[1], sum(mask))
-    return series
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-def generate_medical_data(patient_id, duration_min=120, scenario="normal"):
-    t = np.arange(duration_min)
-    
-    # 🌟 UPGRADE: Patient Baseline Variance
-    # Every patient now has a unique, realistic resting baseline
-    base_hr = np.random.normal(75.0, 8.0)     # Mean 75, Standard Dev 8
-    base_map = np.random.normal(85.0, 6.0)    # Mean 85, Standard Dev 6
-    base_rr = np.random.normal(16.0, 2.0)     # Mean 16, Standard Dev 2
-    base_spo2 = np.random.uniform(96.0, 100.0)# Healthy O2 range
-    
-    hr = np.full(duration_min, base_hr)
-    map_val = np.full(duration_min, base_map)
-    rr = np.full(duration_min, base_rr)
-    spo2 = np.full(duration_min, base_spo2)
-    
-    # The perfect fix: 70% of safe patients are on baseline opioids
-    base_opioid = 2.0 if np.random.rand() < 0.7 else 0.0
-    opioid = np.full(duration_min, base_opioid)
-    label = 0 # Safe
-    
-    if scenario == "bleeding":
-        # MAP drops, HR spikes to compensate
-        start = duration_min // 2
-        hr[start:] += np.linspace(0, 45, duration_minutes := (duration_min - start))
-        map_val[start:] -= np.linspace(0, 35, duration_minutes)
-        label = 1
+# --- THE DATA STORE (The "Single Source of Truth") ---
+allocator = TriageAllocator()
+
+# Initialize 2 Wards with 4 Rooms each
+wards = {
+    "Ward_A": Ward(id="Ward_A", name="North Wing", beds=[
+        Bed(id=f"A{i}", ward_id="Ward_A") for i in range(1, 5)
+    ]),
+    "Ward_B": Ward(id="Ward_B", name="South Wing", beds=[
+        Bed(id=f"B{i}", ward_id="Ward_B") for i in range(1, 5)
+    ])
+}
+
+# Initialize 3 Nurses per Ward
+nurses = {
+    "N1": Nurse(id="N1", name="Sarah RN", ward_id="Ward_A"),
+    "N2": Nurse(id="N2", name="James RN", ward_id="Ward_A"),
+    "N3": Nurse(id="N3", name="Elena RN", ward_id="Ward_A"),
+    "N4": Nurse(id="N4", name="Priya RN", ward_id="Ward_B"),
+    "N5": Nurse(id="N5", name="Marcus RN", ward_id="Ward_B"),
+    "N6": Nurse(id="N6", name="Kofi RN", ward_id="Ward_B"),
+}
+
+# --- THE BACKGROUND SIMULATION ---
+
+async def run_hospital_simulation():
+    tick = 0
+    while True:
+        await asyncio.sleep(1)
+        tick += 1
         
-    elif scenario == "respiratory":
-        # Opioid flow spikes, RR drops first, SpO2 lags then drops
-        start = duration_min // 2
-        opioid[start:] = 5.0 
-        rr[start:] -= np.linspace(0, 10, duration_minutes := (duration_min - start))
-        
-        # Physiological lag for SpO2
-        lag = 8
-        spo2[start+lag:] -= np.linspace(0, 15, duration_min - (start+lag))
-        label = 2
+        # 1. Update Vitals (Simulating real-time noise & the Bed B2 crash at tick 15)
+        for ward in wards.values():
+            for bed in ward.beds:
+                # Add slight noise to everyone
+                bed.vitals["hr"] += (0.5 - (0.5 * (tick % 2))) 
+                
+                # CRASH TRIGGER: Bed B2 starts bleeding at tick 15
+                if bed.id == "B2" and tick >= 15:
+                    bed.vitals["map"] -= 2.1
+                    bed.vitals["hr"] += 3.5
 
-    # Apply Real-World Sensor Noise
-    hr = apply_noise(hr, noise_level=0.01, outlier_range=(40, 160))
-    map_val = apply_noise(map_val, noise_level=0.02, outlier_range=(30, 120))
-    rr = apply_noise(rr, noise_level=0.05, outlier_range=(4, 30))
-    spo2 = np.clip(apply_noise(spo2, noise_level=0.005, outlier_range=(70, 100)), 50, 100)
+                # 2. RUN THE BRAIN (Get Risk & Deltas)
+                # predict_risk will now return (score, deltas)
+                score, deltas = predict_risk(bed.id, bed.vitals)
+                bed.risk_score = score
+                bed.deltas = deltas
 
-    return pd.DataFrame({
-        "heart_rate": np.round(hr, 2),
-        "map": np.round(map_val, 2),
-        "resp_rate": np.round(rr, 2), 
-        "spo2": np.round(spo2, 2),
-        "opioid_flow": np.round(opioid, 2),
-        "target": label
-    })
+                # 3. TRIGGER ALLOCATOR (If Risk > 75% and no one is assigned)
+                if bed.risk_score > 75 and not bed.assigned_nurse_id:
+                    best_nurse, reason = allocator.find_best_nurse(bed, wards, nurses)
+                    
+                    if best_nurse:
+                        # In 'Manual Mode', we just propose it to the queue
+                        allocator.propose_move(best_nurse, bed, reason)
 
-# --- Execution ---
-print("🚀 Scaling up to 10,000 patients for high-fidelity WardAI training...")
+# Start simulation on boot
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(run_hospital_simulation())
 
-all_patients = [
-    *[generate_medical_data(i, scenario="normal") for i in range(6000)],      # 60% Baseline
-    *[generate_medical_data(i, scenario="bleeding") for i in range(2000)],    # 20% Hemorrhage
-    *[generate_medical_data(i, scenario="respiratory") for i in range(2000)]  # 20% Overdose
-]
+# --- THE ENDPOINTS ---
 
-data = pd.concat(all_patients, ignore_index=True)
-
-# Added a random_state to the shuffle so your results are perfectly reproducible
-print("🔀 Shuffling 1.2 million rows to prevent model bias...")
-data = data.sample(frac=1, random_state=42).reset_index(drop=True)
-
-output_path = "wardai_training_data.csv"
-print(f"💾 Saving to {output_path}... (This might take a minute)")
-data.to_csv(output_path, index=False)
-
-print(f"✅ Success! Created {output_path} with {len(data)} rows.")
-print(f"📊 Dataset Breakdown: {data['target'].value_counts().to_dict()}")
+@app.get("/api/status")
+async def get_status():
+    return {"wards": wards, "nurses": nurses, "pending": allocator.pending_actions}
