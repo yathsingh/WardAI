@@ -27,9 +27,10 @@ async function updateDashboard() {
         currentMode = data.mode;
         updateModeUI();
         renderWards(data.wards, data.nurses);
-        
-        // FIX 1: Passed data.nurses into the table function
         renderTriageTable(data.wards, data.nurses);
+        
+        // NEW: Render the Standby Pool
+        renderStandbyPool(data.nurses); 
         
         renderPendingQueue(data.pending);
         renderAuditLog(data.audit_log);
@@ -74,7 +75,6 @@ function renderWards(wards, nurses) {
     });
 }
 
-// FIX 2: Added 'nurses' to the function parameters
 function renderTriageTable(wards, nurses) {
     const tableBody = document.getElementById('triage-body');
     const allBeds = [...wards.Ward_A.beds, ...wards.Ward_B.beds].sort((a,b) => b.risk_score - a.risk_score);
@@ -85,6 +85,25 @@ function renderTriageTable(wards, nurses) {
             <td class="py-3 px-2 ${bed.deltas.map < -2 ? 'text-red-500 font-bold' : 'text-slate-500'} mono-text text-xs">${bed.deltas.map.toFixed(2)} Δ MAP</td>
             <td class="py-3 px-2 text-slate-600 text-xs font-semibold">${bed.assigned_nurse_id ? nurses[bed.assigned_nurse_id].name : '---'}</td>
         </tr>`).join('');
+}
+
+// NEW: RENDER STANDBY POOL
+function renderStandbyPool(nurses) {
+    const standbyContainer = document.getElementById('standby-list');
+    const standbyNurses = Object.values(nurses).filter(n => !n.assigned_bed_id);
+    
+    document.getElementById('standby-count').innerText = standbyNurses.length;
+    
+    if (standbyNurses.length === 0) {
+        standbyContainer.innerHTML = '<p class="text-slate-400 text-xs italic w-full text-center py-1">No staff available.</p>';
+        return;
+    }
+    
+    standbyContainer.innerHTML = standbyNurses.map(n => `
+        <span class="bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-1 rounded shadow-sm text-[10px] font-bold">
+            ${n.name}
+        </span>
+    `).join('');
 }
 
 function renderPendingQueue(pending) {

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+import random
 from datetime import datetime
 
 # Absolute imports for running from the root directory
@@ -34,6 +35,12 @@ wards = {
     ])
 }
 
+# Give beds random initial vitals so they don't all sync up
+for ward in wards.values():
+    for bed in ward.beds:
+        bed.vitals["map"] -= random.uniform(0, 15)
+        bed.vitals["hr"] += random.uniform(0, 20)
+
 # Initialize 3 Nurses per Ward
 nurses = {
     "N1": Nurse(id="N1", name="Sarah RN", ward_id="Ward_A"),
@@ -47,47 +54,38 @@ nurses = {
 # --- THE BACKGROUND SIMULATION ---
 
 async def run_hospital_simulation():
-    tick = 0
     while True:
         await asyncio.sleep(1)
-        tick += 1
         
-        # SCENARIO SETUP: At Tick 5, occupy all nurses.
-        if tick == 5:
-            nurse_list = list(nurses.values())
-            all_beds = wards["Ward_A"].beds + wards["Ward_B"].beds
-            for i in range(len(nurse_list)):
-                nurse = nurse_list[i]
-                bed = all_beds[i]
-                nurse.status = StaffStatus.IN_PROCESS
-                nurse.assigned_bed_id = bed.id
-                bed.assigned_nurse_id = nurse.id
-
         # 1. Update Vitals
         for ward in wards.values():
             for bed in ward.beds:
-                # Baseline physiological noise
-                if tick % 2 == 0:
-                    bed.vitals["hr"] += 0.5
-                    bed.vitals["map"] -= 0.2
-                else:
-                    bed.vitals["hr"] -= 0.5
-                    bed.vitals["map"] += 0.2
                 
-                # --- DYNAMIC SCENARIO LOGIC ---
                 is_crashing = False
                 drop_map = 0.0
                 rise_hr = 0.0
 
-                if active_scenario == "Bleed_B4" and bed.id == "B4":
+                # --- NEW BREATHING HOSPITAL LOGIC (DEMO TUNED) ---
+                if active_scenario == "Baseline":
+                    if not bed.assigned_nurse_id:
+                        # Unmonitored: Drifts worse a bit faster for the demo
+                        drop_map = random.uniform(0.2, 0.5)
+                        rise_hr = random.uniform(0.4, 0.8)
+                    else:
+                        # Monitored: Recovers faster for the demo
+                        drop_map = random.uniform(-1.0, -0.4)
+                        rise_hr = random.uniform(-1.5, -0.8)
+                        
+                elif active_scenario == "Bleed_B4" and bed.id == "B4":
                     is_crashing = True
-                    drop_map = 3.0 # Fast crash
+                    drop_map = 3.0 
                     rise_hr = 5.0
                 elif active_scenario == "MCE" and bed.id in ["B4", "A1", "A3"]:
                     is_crashing = True
-                    drop_map = 1.1 # 🎬 CINEMATIC CRASH: Takes exactly 10s to hit alarms
+                    drop_map = 1.1 
                     rise_hr = 2.0
 
+                # Apply Scenario logic
                 if is_crashing:
                     if not bed.assigned_nurse_id:
                         bed.vitals["map"] -= drop_map
@@ -97,22 +95,50 @@ async def run_hospital_simulation():
                         if bed.vitals["map"] < 85.0: bed.vitals["map"] += 1.5
                         if bed.vitals["hr"] > 80.0: bed.vitals["hr"] -= 2.0
                         bed.status = PatientStatus.CRITICAL 
+                else:
+                    bed.vitals["map"] -= drop_map
+                    bed.vitals["hr"] += rise_hr
                 
                 # Reset status if stable
                 if not is_crashing and bed.risk_score < 40:
                     bed.status = PatientStatus.STABLE
 
+                # Physical Limits
                 bed.vitals["map"] = max(30.0, min(120.0, bed.vitals["map"]))
                 bed.vitals["hr"] = max(40.0, min(200.0, bed.vitals["hr"]))
 
-                # 2. RUN THE BRAIN
+                # 2. RUN THE ML ENGINE
                 score, deltas = predict_risk(bed.id, bed.vitals)
                 bed.risk_score = score
                 bed.deltas = deltas
 
-                # 3. TRIGGER ALLOCATOR 
-                if bed.risk_score > 75 and not bed.assigned_nurse_id:
-                    # 🚨 BUG FIX: Hide nurses who are already in the Pending Queue
+                # --- AUTONOMOUS NURSING OPERATIONS (FASTER & STAGGERED) ---
+                if active_scenario == "Baseline":
+                    # A. Discharge to Standby if perfectly stable (<20 Risk)
+                    if bed.assigned_nurse_id and bed.risk_score < 20:
+                        # Stagger the departures so they don't all leave at exactly the same tick
+                        if random.random() < 0.4:
+                            nid = bed.assigned_nurse_id
+                            nurses[nid].assigned_bed_id = None
+                            nurses[nid].status = StaffStatus.OFF_PROCESS
+                            bed.assigned_nurse_id = None
+                    
+                    # B. Routine Scheduled Check (Starts earlier at 25 Risk)
+                    elif 25 < bed.risk_score < 75 and not bed.assigned_nurse_id:
+                        # Spread them out: 25% chance per tick to initiate the check
+                        if random.random() < 0.25:
+                            free_nurses = [nid for nid, n in nurses.items() if n.status == StaffStatus.OFF_PROCESS and n.ward_id == bed.ward_id]
+                            if not free_nurses: 
+                                free_nurses = [nid for nid, n in nurses.items() if n.status == StaffStatus.OFF_PROCESS]
+                            
+                            if free_nurses:
+                                nid = free_nurses[0]
+                                nurses[nid].status = StaffStatus.IN_PROCESS
+                                nurses[nid].assigned_bed_id = bed.id
+                                bed.assigned_nurse_id = nid
+
+                # 3. TRIGGER AI COMMAND CENTER (Crisis >= 75 Risk)
+                if bed.risk_score >= 75 and not bed.assigned_nurse_id:
                     pending_nurse_names = [a["nurse_name"] for a in allocator.pending_actions]
                     safe_nurses = {nid: n for nid, n in nurses.items() if n.name not in pending_nurse_names}
                     
@@ -204,7 +230,6 @@ async def approve_allocation(action_id: str):
                         b.assigned_nurse_id = None
                         b.status = PatientStatus.WARNING
 
-        # 🚨 BUG FIX: Force status immediately to IN_PROCESS so the allocator stops picking them
         nurses[nurse_id].status = StaffStatus.IN_PROCESS
         nurses[nurse_id].assigned_bed_id = target_bed_id
         for b in wards[target_ward_id].beds:

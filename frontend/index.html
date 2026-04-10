@@ -80,12 +80,26 @@
             </div>
         </div>
 
-        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
-            <div class="p-4 border-b font-bold text-slate-700 bg-blue-50 text-blue-700 rounded-t-2xl flex justify-between shrink-0">
-                <span>Pending Actions</span>
-                <span id="queue-count" class="bg-blue-200 text-blue-800 px-2 rounded-full text-xs">0</span>
+        <div class="flex flex-col gap-4 h-full overflow-hidden">
+            
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col shrink-0">
+                <div class="p-3 border-b font-bold text-slate-700 bg-emerald-50 text-emerald-700 rounded-t-2xl flex justify-between items-center">
+                    <span class="text-sm">Standby Pool</span>
+                    <span id="standby-count" class="bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full text-xs">0</span>
+                </div>
+                <div id="standby-list" class="p-3 flex flex-wrap gap-2 overflow-y-auto max-h-24">
+                    <p class="text-slate-400 text-xs italic w-full text-center">No staff on standby.</p>
+                </div>
             </div>
-            <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto flex-grow"></div>
+
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col flex-grow overflow-hidden">
+                <div class="p-4 border-b font-bold text-slate-700 bg-blue-50 text-blue-700 rounded-t-2xl flex justify-between shrink-0">
+                    <span>Pending Actions</span>
+                    <span id="queue-count" class="bg-blue-200 text-blue-800 px-2 rounded-full text-xs">0</span>
+                </div>
+                <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto flex-grow"></div>
+            </div>
+            
         </div>
     </div>
 
