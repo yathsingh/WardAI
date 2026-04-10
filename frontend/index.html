@@ -11,23 +11,17 @@
         .mono-text { font-family: 'JetBrains Mono', monospace; }
         .room-card { transition: all 0.3s ease; }
         .pulse-red { animation: pulse-border 1.5s infinite; }
-        
         @keyframes pulse-border {
             0% { border-color: #ef4444; box-shadow: 0 0 0 0px rgba(239, 68, 68, 0.4); }
             70% { border-color: #ef4444; box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
             100% { border-color: #ef4444; box-shadow: 0 0 0 0px rgba(239, 68, 68, 0); }
         }
-
-        /* NEW: The Code Blue Screen Flash Overlay */
         #alarm-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            pointer-events: none; z-index: 9999;
-            box-shadow: inset 0 0 0px rgba(239, 68, 68, 0);
+            pointer-events: none; z-index: 9999; box-shadow: inset 0 0 0px rgba(239, 68, 68, 0);
             transition: box-shadow 0.3s ease;
         }
-        .code-blue-active {
-            animation: screen-pulse 1s infinite alternate;
-        }
+        .code-blue-active { animation: screen-pulse 1s infinite alternate; }
         @keyframes screen-pulse {
             from { box-shadow: inset 0 0 0px rgba(239, 68, 68, 0); }
             to { box-shadow: inset 0 0 80px rgba(239, 68, 68, 0.4); }
@@ -35,7 +29,6 @@
     </style>
 </head>
 <body class="p-6">
-    
     <div id="alarm-overlay"></div>
 
     <div class="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200 relative z-10">
@@ -43,9 +36,16 @@
             <h1 class="text-2xl font-bold text-slate-800 tracking-tight">WardAI <span class="text-blue-600">Command</span></h1>
             <p class="text-slate-500 text-sm">Dynamic Ward Allotment System</p>
         </div>
+
+        <div class="flex space-x-2 border-r border-slate-200 pr-6 mr-2">
+            <button onclick="setScenario('Baseline')" class="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold rounded transition-colors uppercase">🟢 Baseline</button>
+            <button onclick="setScenario('Bleed_B4')" class="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-bold rounded transition-colors border border-red-200 uppercase">🔴 Isolated Crash</button>
+            <button onclick="setScenario('MCE')" class="px-3 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 text-[10px] font-bold rounded transition-colors border border-purple-200 uppercase">🟣 Mass Casualty</button>
+        </div>
+
         <div class="flex items-center space-x-4">
             <span id="mode-label" class="text-sm font-semibold text-slate-600 uppercase transition-colors">Manual Mode</span>
-            <button onclick="toggleSystemMode()" id="mode-toggle" class="w-14 h-7 bg-slate-200 rounded-full p-1 transition-colors duration-300 focus:outline-none">
+            <button onclick="toggleSystemMode()" id="mode-toggle" class="w-14 h-7 bg-slate-200 rounded-full p-1 transition-colors duration-300">
                 <div id="toggle-circle" class="bg-white w-5 h-5 rounded-full shadow-md transform transition-transform duration-300"></div>
             </button>
         </div>
@@ -56,7 +56,6 @@
             <h2 class="text-lg font-bold mb-4 text-slate-700 border-b pb-2">Ward A: North Wing</h2>
             <div id="ward-a-grid" class="grid grid-cols-2 gap-4"></div>
         </div>
-
         <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
             <h2 class="text-lg font-bold mb-4 text-slate-700 border-b pb-2">Ward B: South Wing</h2>
             <div id="ward-b-grid" class="grid grid-cols-2 gap-4"></div>
@@ -86,9 +85,7 @@
                 <span>Pending Actions</span>
                 <span id="queue-count" class="bg-blue-200 text-blue-800 px-2 rounded-full text-xs">0</span>
             </div>
-            <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto flex-grow">
-                <p class="text-slate-400 text-center py-10 italic">No pending alerts.</p>
-            </div>
+            <div id="pending-actions" class="p-4 space-y-4 overflow-y-auto flex-grow"></div>
         </div>
     </div>
 
@@ -99,13 +96,10 @@
         </div>
         <div class="p-0 overflow-y-auto max-h-48">
             <table class="w-full text-left border-collapse text-slate-300">
-                <tbody id="audit-body" class="text-xs mono-text">
-                    <tr><td class="p-4 text-center text-slate-500 italic">No triage actions recorded in current session.</td></tr>
-                </tbody>
+                <tbody id="audit-body" class="text-xs mono-text"></tbody>
             </table>
         </div>
     </div>
-
     <script src="app.js"></script>
 </body>
 </html>

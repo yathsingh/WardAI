@@ -21,7 +21,8 @@ app.add_middleware(
 # --- THE DATA STORE ---
 allocator = TriageAllocator()
 simulation_mode = "Manual"  
-audit_log = [] # NEW: Enterprise Audit Trail
+active_scenario = "Baseline" 
+audit_log = [] 
 
 # Initialize 2 Wards with 4 Rooms each
 wards = {
@@ -51,7 +52,7 @@ async def run_hospital_simulation():
         await asyncio.sleep(1)
         tick += 1
         
-        # SCENARIO SETUP: At Tick 5, occupy all nurses.
+        # SCENARIO SETUP: At Tick 5, occupy all nurses to simulate 100% capacity.
         if tick == 5:
             nurse_list = list(nurses.values())
             all_beds = wards["Ward_A"].beds + wards["Ward_B"].beds
@@ -65,6 +66,7 @@ async def run_hospital_simulation():
         # 1. Update Vitals
         for ward in wards.values():
             for bed in ward.beds:
+                # Baseline physiological noise
                 if tick % 2 == 0:
                     bed.vitals["hr"] += 0.5
                     bed.vitals["map"] -= 0.2
@@ -72,19 +74,32 @@ async def run_hospital_simulation():
                     bed.vitals["hr"] -= 0.5
                     bed.vitals["map"] += 0.2
                 
-                # CRASH TRIGGER: Bed B4 Bleed Scenario
-                if bed.id == "B4" and tick >= 15:
+                # --- DYNAMIC SCENARIO LOGIC ---
+                is_crashing = False
+                if active_scenario == "Bleed_B4" and bed.id == "B4":
+                    is_crashing = True
+                elif active_scenario == "MCE" and bed.id in ["B4", "A1", "A3"]:
+                    is_crashing = True
+
+                if is_crashing:
                     if not bed.assigned_nurse_id:
-                        bed.vitals["map"] -= 2.5
-                        bed.vitals["hr"] += 4.0
+                        # ACTIVE CRISIS: High velocity drop for demo impact
+                        bed.vitals["map"] -= 3.0 
+                        bed.vitals["hr"] += 5.0
                         bed.status = PatientStatus.WARNING
                     else:
+                        # RECOVERY PHASE: Vitals stabilize when nurse is present
                         if bed.vitals["map"] < 85.0:
                             bed.vitals["map"] += 1.5
                         if bed.vitals["hr"] > 80.0:
                             bed.vitals["hr"] -= 2.0
                         bed.status = PatientStatus.CRITICAL 
+                
+                # Reset status if stable and scenario is cleared
+                if active_scenario == "Baseline" and bed.risk_score < 40:
+                    bed.status = PatientStatus.STABLE
 
+                # Physical boundaries
                 bed.vitals["map"] = max(30.0, min(120.0, bed.vitals["map"]))
                 bed.vitals["hr"] = max(40.0, min(200.0, bed.vitals["hr"]))
 
@@ -114,8 +129,9 @@ async def get_status():
         "wards": wards, 
         "nurses": nurses, 
         "pending": allocator.pending_actions,
-        "audit_log": audit_log, # NEW: Send the log to the frontend
-        "mode": simulation_mode
+        "audit_log": audit_log,
+        "mode": simulation_mode,
+        "scenario": active_scenario
     }
 
 @app.post("/api/settings/mode")
@@ -126,12 +142,48 @@ async def toggle_mode(mode: str):
         return {"message": f"System switched to {mode}"}
     raise HTTPException(status_code=400, detail="Invalid mode")
 
+@app.post("/api/scenarios/trigger/{scenario_name}")
+async def trigger_scenario(scenario_name: str):
+    global active_scenario
+    if scenario_name in ["Baseline", "Bleed_B4", "MCE"]:
+        active_scenario = scenario_name
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # 🚨 NEW: CRITICAL MCE LOGIC
+        # If MCE starts, we must unassign nurses from the target beds 
+        # so the AI actually has a "problem" to solve.
+        if scenario_name == "MCE":
+            target_ids = ["B4", "A1", "A3"]
+            for ward in wards.values():
+                for bed in ward.beds:
+                    if bed.id in target_ids and bed.assigned_nurse_id:
+                        # Find the nurse and kick them to "Off-Process" (Standby)
+                        nid = bed.assigned_nurse_id
+                        nurses[nid].assigned_bed_id = None
+                        nurses[nid].status = StaffStatus.OFF_PROCESS
+                        # Empty the bed
+                        bed.assigned_nurse_id = None
+        
+        # Professionalized Reasonings
+        reasons = {
+            "Baseline": "Standard ward monitoring protocols active.",
+            "Bleed_B4": "ADMIN_OVERRIDE: Internal trauma data stream engaged.",
+            "MCE": "EXTERNAL_EVENT: Multiple casualty telemetry detected."
+        }
+
+        audit_log.insert(0, {
+            "time": timestamp,
+            "action": f"SYSTEM STATE: {scenario_name.upper()} INITIATED",
+            "reason": reasons.get(scenario_name, "Manual state change."),
+            "mode": simulation_mode
+        })
+        return {"message": f"Scenario changed to {scenario_name}"}
+    raise HTTPException(status_code=400, detail="Invalid scenario")
+
 @app.post("/api/allocate/approve/{action_id}")
 async def approve_allocation(action_id: str):
     action = next((a for a in allocator.pending_actions if a["id"] == action_id), None)
-    
-    if not action:
-        return {"error": "Action already processed"}
+    if not action: return {"error": "Action already processed"}
 
     nurse_id = None
     for nid, n in nurses.items():
@@ -142,9 +194,8 @@ async def approve_allocation(action_id: str):
     if nurse_id:
         target_bed_id = action["target_bed"]
         target_ward_id = action["target_ward"]
-        
-        # EXECUTE THE SWAP
         old_bed_id = nurses[nurse_id].assigned_bed_id
+        
         if old_bed_id:
             for w in wards.values():
                 for b in w.beds:
@@ -154,12 +205,10 @@ async def approve_allocation(action_id: str):
 
         nurses[nurse_id].status = StaffStatus.DISPATCHED
         nurses[nurse_id].assigned_bed_id = target_bed_id
-        
         for b in wards[target_ward_id].beds:
             if b.id == target_bed_id:
                 b.assigned_nurse_id = nurse_id
 
-        # NEW: Append to Audit Log (Insert at the top)
         timestamp = datetime.now().strftime("%H:%M:%S")
         audit_log.insert(0, {
             "time": timestamp,
@@ -167,12 +216,7 @@ async def approve_allocation(action_id: str):
             "reason": action['reason'],
             "mode": simulation_mode
         })
-        
-        # Keep log from getting too long in memory
-        if len(audit_log) > 20:
-            audit_log.pop()
-
+        if len(audit_log) > 20: audit_log.pop()
         allocator.pending_actions = [a for a in allocator.pending_actions if a["target_bed"] != target_bed_id]
-        return {"message": f"Successfully dispatched {action['nurse_name']} to Bed {target_bed_id}"}
-
+        return {"message": "Success"}
     raise HTTPException(status_code=400, detail="Dispatch failed")
